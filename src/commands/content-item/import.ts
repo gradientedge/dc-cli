@@ -600,6 +600,39 @@ const prepareContentForImport = async (
     log.warn(`Skipping ${missingRepoAssignments.length} content items due to missing schemas.`);
   }
 
+  // Do all content items validate against the schemas
+
+  const validator = new AmplienceSchemaValidator(defaultSchemaLookup(types, schemas));
+
+  const allInvalid = await Promise.all(
+    tree.all.map(async item => {
+      try {
+        const errors = await validator.validate(item.owner.content.body);
+        if (errors.length > 0) {
+          log.error(
+            `${item.owner.content.label} (${item.owner.content.id}) does not validate under the available schema ${item.owner.content.body._meta.schema}.`
+          );
+          log.appendLine(JSON.stringify(errors, null, 2));
+          return item;
+        }
+      } catch (e) {
+        log.error(
+          `Could not validate ${item.owner.content.label} (${item.owner.content.id}) as there is a problem with the schema ${item.owner.content.body._meta.schema}:`,
+          e
+        );
+        return item;
+      }
+      return null;
+    })
+  );
+  if (allInvalid.filter(Boolean).length) {
+    log.appendLine(
+      `Number of invalid content items ${allInvalid.filter(Boolean).length} validated against schemas. Aborting`
+    );
+    process.exitCode = 1;
+    return null;
+  }
+
   // Do all the content items that we depend on exist either in the mapping or in the items we're importing?
   const missingIDs = new Set<string>();
   const invalidContentItems = tree.filterAny(item => {
@@ -618,8 +651,6 @@ const prepareContentForImport = async (
     if (skipIncomplete) {
       tree.removeContent(invalidContentItems);
     } else {
-      const validator = new AmplienceSchemaValidator(defaultSchemaLookup(types, schemas));
-
       const mustSkip: ItemContentDependancies[] = [];
       await Promise.all(
         invalidContentItems.map(async item => {
@@ -915,7 +946,7 @@ export const handler = async (
     mapFile = getDefaultMappingPath(importTitle);
   }
 
-  if (mapping.load(mapFile)) {
+  if (await mapping.load(mapFile)) {
     log.appendLine(`Existing mapping loaded from '${mapFile}', changes will be saved back to it.`);
   } else {
     log.appendLine(`Creating new mapping file at '${mapFile}'.`);
