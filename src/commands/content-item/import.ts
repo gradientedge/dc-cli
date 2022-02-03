@@ -736,6 +736,30 @@ const rewriteDependancy = (dep: ContentDependancyInfo, mapping: ContentMapping, 
   }
 };
 
+const retryCodes = ['SERVICE_INTERRUPTION', ''];
+
+export const createOrUpdateContentWithRetry = async (
+  client: DynamicContent,
+  repo: ContentRepository,
+  existing: string | ContentItem | null,
+  item: ContentItem,
+  log: FileLog,
+  retryCount = 1
+): Promise<ContentImportResult> => {
+  try {
+    debugger;
+    return await createOrUpdateContent(client, repo, existing, item);
+  } catch (e) {
+    if (retryCodes.includes(e && e.errors && e.errors[0] && e.errors[0].code) && retryCount < 5) {
+      // Wait 1 second more each time retry is needed
+      log.appendLine(`** Failed to update or create ${item.label}, retry ${retryCount}, error: ${e}`);
+      await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+      return await createOrUpdateContentWithRetry(client, repo, existing, item, log, retryCount + 1);
+    }
+    throw e;
+  }
+};
+
 const importTree = async (
   client: DynamicContent,
   tree: ContentDependancyTree,
@@ -767,11 +791,12 @@ const importTree = async (
       let newItem: ContentItem;
       let oldVersion: number;
       try {
-        const result = await createOrUpdateContent(
+        const result = await createOrUpdateContentWithRetry(
           client,
           item.owner.repo,
           mapping.getContentItem(originalId as string) || null,
-          content
+          content,
+          log
         );
         newItem = result.newItem;
         oldVersion = result.oldVersion;
@@ -842,11 +867,12 @@ const importTree = async (
       let newItem: ContentItem;
       let oldVersion: number;
       try {
-        const result = await createOrUpdateContent(
+        const result = await createOrUpdateContentWithRetry(
           client,
           item.owner.repo,
           newDependants[i] || mapping.getContentItem(originalId as string),
-          content
+          content,
+          log
         );
         newItem = result.newItem;
         oldVersion = result.oldVersion;
