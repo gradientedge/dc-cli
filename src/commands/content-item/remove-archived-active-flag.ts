@@ -8,10 +8,11 @@ import { ContentItem, DynamicContent, Status } from 'dc-management-sdk-js';
 import { equalsOrRegex } from '../../common/filter/filter';
 import { getDefaultLogPath } from '../../common/log-helpers';
 import { asyncQuestion } from '../../common/question-helpers';
+import { PublishQueue } from '../../common/import/publish-queue';
 
-export const command = 'remove-archived-delivery-key [id]';
+export const command = 'remove-archived-active-flag [id]';
 
-export const desc = 'Remove Archived Content Item Delivery Key';
+export const desc = 'Remove Archived Content Item Active Flag';
 
 export const LOG_FILENAME = (platform: string = process.platform): string =>
   getDefaultLogPath('content-item', 'remove-archived-delivery-key', platform);
@@ -21,11 +22,11 @@ export const builder = (yargs: Argv): void => {
     .positional('id', {
       type: 'string',
       describe:
-        'The ID of a content item in the archive to remove the delivery key from. If id is not provided, this command will remove delivery keys from ALL content items in the archive through all content repositories in the hub.'
+        'The ID of a content item in the archive to remove the active flag from. If id is not provided, this command will remove active flags from ALL content items in the archive through all content repositories in the hub.'
     })
     .option('repoId', {
       type: 'string',
-      describe: 'The ID of a content repository to search items in to remove the delivery keys.',
+      describe: 'The ID of a content repository to search items in to remove the active flags.',
       requiresArg: false
     })
     .option('folderId', {
@@ -48,7 +49,7 @@ export const builder = (yargs: Argv): void => {
       type: 'boolean',
       boolean: true,
       describe:
-        'If present, there will be no confirmation prompt before removing the delivery keys from the found archived content.'
+        'If present, there will be no confirmation prompt before removing the active flags from the found archived content.'
     })
     .alias('s', 'silent')
     .option('s', {
@@ -81,12 +82,13 @@ export const filterContentItems = async ({
   try {
     const missingContent = false;
 
-    // Filter to content items with a delivery key
-    const contentItemsWithDeliveryKey = contentItems.filter(item => item.body._meta.deliveryKey);
+    // Filter to content items which have been published before with an active flag
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const contentItemsWithActive = contentItems.filter(item => item.body.active && (item as any).lastPublishedVersion);
 
     if (name != null) {
       const itemsArray: string[] = Array.isArray(name) ? name : [name];
-      const contentItemsFiltered = contentItemsWithDeliveryKey.filter(
+      const contentItemsFiltered = contentItemsWithActive.filter(
         item => itemsArray.findIndex(id => equalsOrRegex(item.label || '', id)) != -1
       );
 
@@ -98,7 +100,7 @@ export const filterContentItems = async ({
 
     if (contentType != null) {
       const itemsArray: string[] = Array.isArray(contentType) ? contentType : [contentType];
-      const contentItemsFiltered = contentItemsWithDeliveryKey.filter(item => {
+      const contentItemsFiltered = contentItemsWithActive.filter(item => {
         return itemsArray.findIndex(id => equalsOrRegex(item.body._meta.schema, id)) != -1;
       });
 
@@ -109,7 +111,7 @@ export const filterContentItems = async ({
     }
 
     return {
-      contentItems: contentItemsWithDeliveryKey,
+      contentItems: contentItemsWithActive,
       missingContent
     };
   } catch (err) {
@@ -202,7 +204,8 @@ export const processItems = async ({
   silent,
   logFile,
   allContent,
-  ignoreError
+  ignoreError,
+  argv
 }: {
   contentItems: ContentItem[];
   force?: boolean;
@@ -211,13 +214,14 @@ export const processItems = async ({
   allContent: boolean;
   missingContent: boolean;
   ignoreError?: boolean;
+  argv: Arguments<UnarchiveOptions & ConfigurationParameters>;
 }): Promise<void> => {
   if (contentItems.length == 0) {
-    console.log('No delivery keys found in archived items.');
+    console.log('No active flags found in archived items.');
     return;
   }
 
-  console.log('The following content items in the archive will have the delivery keys removed:');
+  console.log('The following content items in the archive will have the active flags removed:');
   contentItems.forEach((contentItem: ContentItem) => {
     console.log(` ${contentItem.label} (${contentItem.id})`);
   });
@@ -225,8 +229,8 @@ export const processItems = async ({
 
   if (!force) {
     const question = allContent
-      ? `Providing no ID or filter will remove delivery keys from all archived content-items! Are you sure you want to do this? (y/n)\n`
-      : `Are you sure you want to remove delivery keys from these archived content-items? (y/n)\n`;
+      ? `Providing no ID or filter will remove active flags from all archived content-items! Are you sure you want to do this? (y/n)\n`
+      : `Are you sure you want to remove active flags from these archived content-items? (y/n)\n`;
 
     const yes = await asyncQuestion(question);
     if (!yes) {
@@ -235,32 +239,55 @@ export const processItems = async ({
   }
 
   const timestamp = Date.now().toString();
-  const log = new ArchiveLog(`Content Items Remove Archived Delivery Key Log - ${timestamp}\n`);
+  const log = new ArchiveLog(`Content Items Remove Archived Active Flag Log - ${timestamp}\n`);
 
   let successCount = 0;
 
-  for (let i = 0; i < contentItems.length; i++) {
-    const deliveryKey = contentItems[i].body._meta.deliveryKey;
-    try {
-      contentItems[i] = await contentItems[i].related.unarchive();
-      contentItems[i].body._meta.deliveryKey = null;
-      contentItems[i] = await contentItems[i].related.update(contentItems[i]);
-      await contentItems[i].related.archive();
+  const pubQueue = new PublishQueue(argv);
+  // log.appendLine(`Publishing ${publishable.length} items. (${publishChildren} children included)`);
 
-      log.addAction('REMOVED-ARCHIVED-DELIVERY-KEY', `${contentItems[i].id}:${deliveryKey}\n`);
+  // for (let i = 0; i < publishable.length; i++) {
+  //   const item = publishable[i].item;
+
+  //
+  // }
+
+  //   log.appendLine(`Waiting for all publishes to complete...`);
+  //   await pubQueue.waitForAll();
+
+  //   log.appendLine(`Finished publishing, with ${pubQueue.failedJobs.length} failed publishes total.`);
+  //   pubQueue.failedJobs.forEach(job => {
+  //     log.appendLine(` - ${job.item.label}`);
+  //   });
+  // }
+
+  for (let i = 0; i < contentItems.length; i++) {
+    try {
+      // contentItems[i] = await contentItems[i].related.unarchive();
+      // contentItems[i].body.active = false;
+      // contentItems[i] = await contentItems[i].related.update(contentItems[i]);
+      try {
+        await pubQueue.publish(contentItems[i]);
+        log.addComment(`Started publish for ${contentItems[i].label}.`);
+      } catch (e) {
+        log.addComment(`Failed to initiate publish for ${contentItems[i].label}: ${e.toString()}`);
+      }
+      // await contentItems[i].related.archive();
+
+      log.addAction('REMOVED-ARCHIVED-ACTIVE-FLAG', `${contentItems[i].id}\n`);
       successCount++;
     } catch (e) {
-      log.addComment(`REMOVED-ARCHIVED-DELIVERY-KEY FAILED: ${contentItems[i].id}:${deliveryKey}`);
+      log.addComment(`REMOVED-ARCHIVED-ACTIVE-FLAG FAILED: ${contentItems[i].id}`);
       log.addComment(e.toString());
 
       if (ignoreError) {
         log.warn(
-          `Failed to remove delivery key ${deliveryKey} and re-archive ${contentItems[i].label} (${contentItems[i].id}), current status is ${contentItems[i].status}, continuing.`,
+          `Failed to remove active flag and re-archive ${contentItems[i].label} (${contentItems[i].id}), current status is ${contentItems[i].status}, continuing.`,
           e
         );
       } else {
         log.error(
-          `Failed to remove delivery key ${deliveryKey} and re-archive ${contentItems[i].label} (${contentItems[i].id}), current status is ${contentItems[i].status}, aborting.`,
+          `Failed to remove active flag and re-archive ${contentItems[i].label} (${contentItems[i].id}), current status is ${contentItems[i].status}, aborting.`,
           e
         );
         break;
@@ -272,11 +299,12 @@ export const processItems = async ({
     await log.writeToFile(logFile.replace('<DATE>', timestamp));
   }
 
-  console.log(`Remove archived delivery key from ${successCount} content items.`);
+  console.log(`Remove archived active flag from ${successCount} content items.`);
 };
 
 export const handler = async (argv: Arguments<UnarchiveOptions & ConfigurationParameters>): Promise<void> => {
   const { id, logFile, force, silent, ignoreError, hubId, revertLog, repoId, folderId, name, contentType } = argv;
+  console.log(argv, process.env);
   const client = dynamicContentClientFactory(argv);
 
   const allContent = !id && !name && !contentType && !revertLog && !folderId && !repoId;
@@ -295,7 +323,7 @@ export const handler = async (argv: Arguments<UnarchiveOptions & ConfigurationPa
   }
 
   if (allContent) {
-    console.log('No filter was given, removing delivery keys on all archived content');
+    console.log('No filter was given, removing active flags on all archived content');
   }
 
   const { contentItems, missingContent } = await getContentItems({
@@ -316,7 +344,8 @@ export const handler = async (argv: Arguments<UnarchiveOptions & ConfigurationPa
     logFile,
     allContent,
     missingContent,
-    ignoreError
+    ignoreError,
+    argv
   });
 };
 
